@@ -27,9 +27,9 @@ import uuid
 from users.models import Employee  # Импортируем модель Employee
 
 
-pdfmetrics.registerFont(
-    TTFont("DejaVuSans", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf")
-)
+
+
+pdfmetrics.registerFont(TTFont('DejaVuSans', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf'))
 addMapping('DejaVuSans', 0, 0, 'DejaVuSans')
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger('inventory')
@@ -467,6 +467,36 @@ class AttributeValue(models.Model):
         return f"{self.attribute_type.name}: {self.value} ({self.slug})"
 
 
+class Document(StoreOwnedModel):
+    name = models.CharField(
+            max_length=255,
+            verbose_name="Названия договора"
+    )
+    date_from = models.DateField(
+            verbose_name="Дата начала действия"
+    )
+    date_to = models.DateField(
+            verbose_name="Дата окончание"
+    )
+    file = models.FileField(
+            upload_to='documents/',
+            verbose_name="Файл документа"
+    )
+    created_at = models.DateTimeField(
+            auto_now_add=True,
+            verbose_name="Дата загруский"
+    )
+
+    class Meta:
+        verbose_name = "Договор"
+        verbose_name_plural = "Договор"
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.name} ({self.date_from:%d.%m.%Y} - {self.date_to:%d.%m.%Y})"
+
+
+
 class Product(StoreOwnedModel):
     # Системные единицы измерения
     SYSTEM_UNITS = [
@@ -505,6 +535,15 @@ class Product(StoreOwnedModel):
         related_name='products',
         verbose_name="Категория"
     )
+    document = models.ForeignKey(
+            Document,
+            on_delete=models.SET_NULL,
+            null=True,
+            blank=True,
+            related_name="products",
+            verbose_name="Договор"
+    )
+
     
     # Единица измерения - системная или пользовательская
     unit_type = models.CharField(

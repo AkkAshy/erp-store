@@ -110,18 +110,27 @@ CORS_EXPOSE_HEADERS = [
     'content-disposition',
 ]
 
+ALLOWED_HOSTS = [
+    "erp.kerek.uz",
+    "www.erp.kerek.uz",
+]
+
+
+
+CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://erp-app-six.vercel.app",
+    "https://erp.kerek.uz"
+]
+
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://erp-app-six.vercel.app",
-    "http://192.168.1.15:5173",
 ]
-
-CORS_ALLOW_CREDENTIALS = True
-
-CSRF_TRUSTED_ORIGINS = ["http://localhost:5173", "https://erp-app-six.vercel.app/"]
-
-
 ROOT_URLCONF = 'sompos.urls'
 
 TEMPLATES = [
