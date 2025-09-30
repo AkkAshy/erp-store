@@ -11,7 +11,7 @@ from .models import (Product, ProductCategory, Stock,
                      AttributeValue, ProductAttribute,
                      SizeChart, SizeInfo, CustomUnit,
                      ProductBatchAttribute, StockHistory,
-                     FinancialSummary
+                     FinancialSummary, Document
                      )
 from users.serializers import UserSerializer
 import logging
@@ -641,6 +641,31 @@ class ProductBatchSerializer(serializers.ModelSerializer):
         return data
 
 
+class DocumentSerializer(serializers.ModelSerializer):
+    product_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Document
+        fields = [
+                'id', 'name', 'date_from', 'date_to',
+                'file', 'created_at', 'product_count'
+                ]
+        read_only_fields = ['created_at']
+
+    def get_product_count(self, obj):
+        return obj.products.count()
+
+    def validate(self, attrs):
+        date_from = attrs.get('date_from')
+        date_to = attrs.get('date_to')
+
+        if date_from and date_to and date_to < date_from:
+            raise serializers.ValidationError({
+                'date_to': "Дата окончание не может быть раньше чем дата заключение"
+                })
+        return attrs
+
+
 class ProductSerializer(StoreSerializerMixin, serializers.ModelSerializer):
     """
     ОБНОВЛЕННЫЙ сериализатор для товаров с новой системой единиц измерения
@@ -695,12 +720,21 @@ class ProductSerializer(StoreSerializerMixin, serializers.ModelSerializer):
     # Метаданные
     created_by = UserSerializer(read_only=True)
 
-
+    document = DocumentSerializer(read_only=True)
+    document_id = serializers.PrimaryKeyRelatedField(
+            source = 'document',
+            queryset=Document.objects.none(),
+            write_only=True,
+            required = False,
+            allow_null = True,
+            help_text = "ID Договрв (опцианально)"
+        )
 
     class Meta:
         model = Product
         fields = [
             'id', 'name', 'barcode', 'category', 'category_name',
+            'document', 'document_id',
             'unit_type', 'custom_unit', 'custom_unit_id', 'unit_display',
             'override_min_quantity', 'override_step',
             'sale_price', 'price_info',
@@ -718,6 +752,16 @@ class ProductSerializer(StoreSerializerMixin, serializers.ModelSerializer):
             'name': {'trim_whitespace': True},
             'barcode': {'required': False, 'allow_blank': True},
         }
+    
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        request = self.context.get('request')
+        if request and hasattr(request.user, 'current_store') and request.user.current_store:
+            current_store = request.user.current_store
+            self.fields['document_id'].queryset = Document.object.filter(
+                    store=current_store
+            )
 
     def validate_sale_price(self, value):
         if value < 0:
@@ -726,6 +770,16 @@ class ProductSerializer(StoreSerializerMixin, serializers.ModelSerializer):
                 code='negative_price'
             )
         return round(value, 2)
+
+
+    def validate_document_id(self, value):
+        if value:
+            request = self.context.get('request')
+            if request and hasattr(request.user, 'current_store'):
+                raise serializers.ValidationError(
+                        "Договор не принадлежить данному магазину"
+                        )
+        return value
     
     def get_batch_attributes(self, obj):
         """Получить все атрибуты из всех партий товара"""
@@ -1076,6 +1130,22 @@ class ProductMultiSizeCreateSerializer(serializers.Serializer):
     )
     batch_info = serializers.ListField(child=serializers.DictField(), required=True)
     batch_attributes = serializers.SerializerMethodField()
+    
+    document_id = serializers.PrimaryKeyRelatedField(
+            queryset=Document.objects.all(),
+            required=False,
+            allow_null=True,
+            help_text='ID Договора (Опционально)'
+        )
+
+    def validate_document_id(self, value):
+        if value:
+            requst = self.context.gey('request')
+            if request and hasattr(request.user, 'current_store'):
+                raise serializers.ValidatorError(
+                        "Договор не принадлежит вашему магазину"
+                        )
+        return value
 
     def validate(self, attrs):
         unit_type = attrs.get('unit_type')
@@ -1148,7 +1218,8 @@ class ProductMultiSizeCreateSerializer(serializers.Serializer):
     def create(self, validated_data):
         from .models import ExchangeRate
         from datetime import date
-
+        
+        document = validated_data.get("document_id")
         store = validated_data.get("store")
         created_by = validated_data.get("created_by")
         batch_info = validated_data.get("batch_info", [])
@@ -1195,6 +1266,7 @@ class ProductMultiSizeCreateSerializer(serializers.Serializer):
                         "sale_price": validated_data["sale_price"],
                         "store": store,
                         "has_sizes": True,
+                        "document": document,
                         "default_size": size_instance,
                     }
 

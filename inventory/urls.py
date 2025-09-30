@@ -19,6 +19,7 @@ router.register(r'stock', views.StockViewSet, basename='stock')
 router.register(r'size-info', views.SizeInfoViewSet, basename='sizeinfo')
 router.register(r'custom-units', views.CustomUnitViewSet, basename='customunit')  # ← НОВЫЙ
 router.register(r'stock-history', views.StockHistoryViewSet, basename='stock-history')
+router.register(r'documents', views.DocumentViewSet, basename='document')
 
 urlpatterns = [
     # ViewSets через роутер

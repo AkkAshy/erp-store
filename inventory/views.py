@@ -25,7 +25,7 @@ from sales.models import TransactionItem, Transaction  # Твои импорты
 from datetime import timedelta
 from .models import ( Product, ProductCategory, Stock, ProductBatch,
     AttributeType, AttributeValue, ProductAttribute,
-    SizeChart, SizeInfo, CustomUnit, ProductBatchAttribute, StockHistory, FinancialSummary
+    SizeChart, SizeInfo, CustomUnit, ProductBatchAttribute, StockHistory, FinancialSummary, Document
 )
 from django.db.models.functions import TruncHour
 
@@ -43,8 +43,8 @@ from .serializers import (
     ProductSerializer, ProductCategorySerializer, StockSerializer,
     ProductBatchSerializer, AttributeTypeSerializer, AttributeValueSerializer,
     ProductAttributeSerializer, SizeChartSerializer, SizeInfoSerializer,
-    ProductMultiSizeCreateSerializer, CustomUnitSerializer, StockHistorySerializer, FinancialSummarySerializer
-)
+    ProductMultiSizeCreateSerializer, CustomUnitSerializer, StockHistorySerializer, FinancialSummarySerializer,
+    DocumentSerializer)
 
 from .filters import ProductFilter, ProductBatchFilter, StockFilter, SizeInfoFilter
 from .pagination import CustomLimitOffsetPagination
@@ -658,6 +658,46 @@ class AttributeValueViewSet(ModelViewSet):
     filterset_fields = ['attribute_type']
     search_fields = ['value']
 
+from rest_framework import viewsets, permissions, filters
+from django_filters.rest_framework import DjangoFilterBackend
+from .models import Document
+from .serializers import DocumentSerializer
+from stores.mixins import StoreViewSetMixin, StorePermissionMixin  # если у тебя такие же как для Product
+
+
+class DocumentViewSet(
+    StoreViewSetMixin,
+    StorePermissionMixin,
+    viewsets.ModelViewSet
+):
+    """
+    CRUD для договоров.
+    Доступ ограничен текущим магазином.
+    """
+    serializer_class = DocumentSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name']
+    filterset_fields = ['date_from', 'date_to']
+    ordering_fields = ['name', 'date_from', 'date_to', 'created_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        """
+        Ограничиваем документы текущим магазином пользователя.
+        """
+        store = getattr(self.request.user, 'current_store', None)
+        if store:
+            return Document.objects.filter(store=store)
+        return Document.objects.none()
+
+    def perform_create(self, serializer):
+        """
+        Привязываем договор к текущему магазину.
+        """
+        store = self.get_current_store()
+        serializer.save(store=store)
 
 
 
