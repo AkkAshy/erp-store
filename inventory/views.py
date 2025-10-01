@@ -671,8 +671,7 @@ class DocumentViewSet(
     viewsets.ModelViewSet
 ):
     """
-    CRUD для договоров.
-    Доступ ограничен текущим магазином.
+    ✅ УЛУЧШЕННЫЙ CRUD для договоров
     """
     serializer_class = DocumentSerializer
     permission_classes = [permissions.IsAuthenticated]
@@ -684,20 +683,130 @@ class DocumentViewSet(
     ordering = ['-created_at']
 
     def get_queryset(self):
-        """
-        Ограничиваем документы текущим магазином пользователя.
-        """
+        """Ограничиваем документы текущим магазином"""
         store = getattr(self.request.user, 'current_store', None)
         if store:
-            return Document.objects.filter(store=store)
+            return Document.objects.filter(store=store).order_by('-created_at')
         return Document.objects.none()
 
     def perform_create(self, serializer):
-        """
-        Привязываем договор к текущему магазину.
-        """
+        """Привязываем договор к текущему магазину"""
         store = self.get_current_store()
-        serializer.save(store=store)
+        document = serializer.save(store=store)
+        
+        # ✅ НОВОЕ: Проверка на близкое истечение
+        days_until_expiry = (document.date_to - timezone.now().date()).days
+        if days_until_expiry < 30:
+            logger.warning(
+                f"Договор '{document.name}' истекает через {days_until_expiry} дней"
+            )
+
+    @action(detail=False, methods=['get'])
+    def active(self, request):
+        """✅ НОВОЕ: Только активные договоры"""
+        today = timezone.now().date()
+        active_docs = self.get_queryset().filter(
+            date_from__lte=today,
+            date_to__gte=today
+        )
+        
+        serializer = self.get_serializer(active_docs, many=True)
+        return Response({
+            'count': active_docs.count(),
+            'results': serializer.data
+        })
+    
+    @action(detail=False, methods=['get'])
+    def expiring_soon(self, request):
+        """✅ НОВОЕ: Договоры, истекающие в ближайшие 30 дней"""
+        today = timezone.now().date()
+        threshold = today + timedelta(days=30)
+        
+        expiring_docs = self.get_queryset().filter(
+            date_to__gte=today,
+            date_to__lte=threshold
+        ).order_by('date_to')
+        
+        serializer = self.get_serializer(expiring_docs, many=True)
+        
+        return Response({
+            'count': expiring_docs.count(),
+            'message': f'Найдено {expiring_docs.count()} договоров, истекающих в ближайшие 30 дней',
+            'results': serializer.data
+        })
+    
+    @action(detail=False, methods=['get'])
+    def expired(self, request):
+        """✅ НОВОЕ: Истекшие договоры"""
+        today = timezone.now().date()
+        expired_docs = self.get_queryset().filter(date_to__lt=today)
+        
+        serializer = self.get_serializer(expired_docs, many=True)
+        return Response({
+            'count': expired_docs.count(),
+            'results': serializer.data
+        })
+    
+    @action(detail=True, methods=['get'])
+    def products(self, request, pk=None):
+        """✅ НОВОЕ: Товары по конкретному договору"""
+        document = self.get_object()
+        products = document.products.select_related('category', 'stock')
+        
+        serializer = ProductSerializer(products, many=True, context={'request': request})
+        
+        return Response({
+            'document': {
+                'id': document.id,
+                'name': document.name,
+                'date_from': document.date_from,
+                'date_to': document.date_to
+            },
+            'product_count': products.count(),
+            'products': serializer.data
+        })
+    
+    @action(detail=False, methods=['get'])
+    def statistics(self, request):
+        """✅ НОВОЕ: Статистика по договорам"""
+        store = self.get_current_store()
+        today = timezone.now().date()
+        
+        all_docs = self.get_queryset()
+        
+        stats = {
+            'total': all_docs.count(),
+            'active': all_docs.filter(
+                date_from__lte=today,
+                date_to__gte=today
+            ).count(),
+            'expired': all_docs.filter(date_to__lt=today).count(),
+            'expiring_soon': all_docs.filter(
+                date_to__gte=today,
+                date_to__lte=today + timedelta(days=30)
+            ).count(),
+            'future': all_docs.filter(date_from__gt=today).count(),
+            'total_products': Product.objects.filter(
+                store=store,
+                document__isnull=False
+            ).count()
+        }
+        
+        return Response(stats)
+    
+    def destroy(self, request, *args, **kwargs):
+        """✅ УЛУЧШЕНО: Проверка перед удалением"""
+        document = self.get_object()
+        product_count = document.products.count()
+        
+        if product_count > 0:
+            return Response({
+                'error': f'Невозможно удалить договор. К нему привязано {product_count} товаров.',
+                'suggestion': 'Сначала отвяжите товары или удалите их',
+                'products': list(document.products.values_list('name', flat=True)[:5])
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        return super().destroy(request, *args, **kwargs)
 
 
 

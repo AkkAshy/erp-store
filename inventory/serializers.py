@@ -643,27 +643,106 @@ class ProductBatchSerializer(serializers.ModelSerializer):
 
 class DocumentSerializer(serializers.ModelSerializer):
     product_count = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
+    days_until_expiry = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
         fields = [
-                'id', 'name', 'date_from', 'date_to',
-                'file', 'created_at', 'product_count'
-                ]
+            'id', 'name', 'date_from', 'date_to',
+            'file', 'created_at', 'product_count',
+            'is_expired', 'days_until_expiry'
+        ]
         read_only_fields = ['created_at']
 
     def get_product_count(self, obj):
         return obj.products.count()
 
+    def get_is_expired(self, obj):
+        from django.utils import timezone
+        return obj.date_to < timezone.now().date()
+    
+    def get_days_until_expiry(self, obj):
+        from django.utils import timezone
+        delta = obj.date_to - timezone.now().date()
+        return delta.days
+
     def validate(self, attrs):
         date_from = attrs.get('date_from')
         date_to = attrs.get('date_to')
 
-        if date_from and date_to and date_to < date_from:
-            raise serializers.ValidationError({
-                'date_to': "Дата окончание не может быть раньше чем дата заключение"
+        if date_from and date_to:
+            if date_to < date_from:
+                raise serializers.ValidationError({
+                    'date_to': "Дата окончания не может быть раньше даты начала"
                 })
+            
+            from django.utils import timezone
+            today = timezone.now().date()
+            
+            if date_to < today:
+                raise serializers.ValidationError({
+                    'date_to': f"Дата окончания ({date_to.strftime('%d.%m.%Y')}) уже прошла"
+                })
+            
+            days_until_expiry = (date_to - today).days
+            if days_until_expiry < 30:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(f"⚠️ Договор истекает через {days_until_expiry} дней")
+            
+            duration = (date_to - date_from).days
+            if duration < 1:
+                raise serializers.ValidationError(
+                    "Минимальный срок договора - 1 день"
+                )
+            
+            if duration > 3650:
+                raise serializers.ValidationError(
+                    "Максимальный срок договора - 10 лет"
+                )
+        
         return attrs
+    
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        
+        if instance.date_to < timezone.now().date():
+            data['status'] = 'expired'
+            data['status_display'] = '❌ Истек'
+        elif (instance.date_to - timezone.now().date()).days < 30:
+            data['status'] = 'expiring_soon'
+            data['status_display'] = '⚠️ Истекает скоро'
+        else:
+            data['status'] = 'active'
+            data['status_display'] = '✅ Активен'
+        
+        return data
+
+
+#class DocumentSerializer(serializers.ModelSerializer):
+ #   product_count = serializers.SerializerMethodField()
+
+  #  class Meta:
+  #      model = Document
+  #      fields = [
+  #              'id', 'name', 'date_from', 'date_to',
+  #              'file', 'created_at', 'product_count'
+  #              ]
+  #      read_only_fields = ['created_at']
+
+  #  def get_product_count(self, obj):
+  #      return obj.products.count()
+
+  #  def validate(self, attrs):
+  #      date_from = attrs.get('date_from')
+  #      date_to = attrs.get('date_to')
+
+  #      if date_from and date_to and date_to < date_from:
+  #          raise serializers.ValidationError({
+  #              'date_to': "Дата окончание не может быть раньше чем дата заключение"
+  #              })
+  #      return attrs
 
 
 class ProductSerializer(StoreSerializerMixin, serializers.ModelSerializer):
@@ -759,9 +838,13 @@ class ProductSerializer(StoreSerializerMixin, serializers.ModelSerializer):
         request = self.context.get('request')
         if request and hasattr(request.user, 'current_store') and request.user.current_store:
             current_store = request.user.current_store
-            self.fields['document_id'].queryset = Document.object.filter(
-                    store=current_store
+            # ✅ ИСПРАВЛЕНО: Document.objects (было Document.object)
+            self.fields['document_id'].queryset = Document.objects.filter(
+                store=current_store
             )
+        else:
+            # ✅ Если магазин не определен - оставляем пустой queryset
+            self.fields['document_id'].queryset = Document.objects.none()
 
     def validate_sale_price(self, value):
         if value < 0:
@@ -773,13 +856,39 @@ class ProductSerializer(StoreSerializerMixin, serializers.ModelSerializer):
 
 
     def validate_document_id(self, value):
-        if value:
-            request = self.context.get('request')
-            if request and hasattr(request.user, 'current_store'):
-                raise serializers.ValidationError(
-                        "Договор не принадлежить данному магазину"
-                        )
+        """✅ ПРАВИЛЬНАЯ валидация документа"""
+        if value is None:
+            return value  # Документ опционален
+        
+        request = self.context.get('request')
+        if not request:
+            return value
+        
+        # Получаем текущий магазин
+        current_store = getattr(request.user, 'current_store', None)
+        
+        if not current_store:
+            raise serializers.ValidationError(
+                "Невозможно определить текущий магазин"
+            )
+        
+        # ✅ ИСПРАВЛЕНО: Проверяем принадлежность документа к магазину
+        if value.store != current_store:
+            raise serializers.ValidationError(
+                f"Договор '{value.name}' не принадлежит вашему магазину"
+            )
+        
+        # ✅ Проверяем срок действия договора
+        from django.utils import timezone
+        today = timezone.now().date()
+        
+        if value.date_to < today:
+            raise serializers.ValidationError(
+                f"Договор '{value.name}' истек {value.date_to.strftime('%d.%m.%Y')}"
+            )
+        
         return value
+     
     
     def get_batch_attributes(self, obj):
         """Получить все атрибуты из всех партий товара"""
@@ -1138,14 +1247,43 @@ class ProductMultiSizeCreateSerializer(serializers.Serializer):
             help_text='ID Договора (Опционально)'
         )
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # ✅ Устанавливаем queryset для document_id на основе контекста
+        request = self.context.get('request')
+        if request and hasattr(request.user, 'current_store') and request.user.current_store:
+            current_store = request.user.current_store
+            self.fields['document_id'].queryset = Document.objects.filter(
+                store=current_store
+            )
+        else:
+            self.fields['document_id'].queryset = Document.objects.none()
+
     def validate_document_id(self, value):
-        if value:
-            requst = self.context.gey('request')
-            if request and hasattr(request.user, 'current_store'):
-                raise serializers.ValidatorError(
-                        "Договор не принадлежит вашему магазину"
-                        )
+        """✅ ИСПРАВЛЕНО: Правильная валидация"""
+        if value is None:
+            return value  # Документ опционален
+        
+        request = self.context.get('request')  # ✅ ИСПРАВЛЕНО: было gey
+        if not request:
+            return value
+        
+        current_store = getattr(request.user, 'current_store', None)
+        
+        if not current_store:
+            raise serializers.ValidationError(  # ✅ ИСПРАВЛЕНО: было ValidatorError
+                "Невозможно определить текущий магазин"
+            )
+        
+        # ✅ ИСПРАВЛЕНО: Проверяем принадлежность документа
+        if value.store != current_store:
+            raise serializers.ValidationError(
+                f"Договор '{value.name}' не принадлежит вашему магазину"
+            )
+        
         return value
+
 
     def validate(self, attrs):
         unit_type = attrs.get('unit_type')
